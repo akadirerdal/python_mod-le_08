@@ -1,0 +1,2 @@
+# Exercise 2 requirements - python-dotenv for .env management
+python-dotenv>=1.0.0,<2.0.0
