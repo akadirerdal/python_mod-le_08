@@ -1,231 +1,198 @@
-"""Exercise 2: Accessing the Mainframe - secure configuration system.
-
-Loads configuration from environment variables using .env files.
-Demonstrates dev/production mode differences and security checks.
-
-Authorized modules: os, sys, python-dotenv modules, file operations.
-"""
-
 import os
-import re
 import sys
 
-# Try to import python-dotenv; fallback gracefully if missing
 try:
-    from dotenv import load_dotenv
-    HAS_DOTENV = True
+    from dotenv import dotenv_values, load_dotenv
 except ImportError:
-    HAS_DOTENV = False
-    # Fallback: a no-op function that does nothing
-    def load_dotenv(dotenv_path: str = None, **kwargs):  # type: ignore
-        return False
+    print("ORACLE STATUS: Connection lost")
+    print("ERROR: python-dotenv is not installed.")
+    print("Install it with: pip install -r requirements.txt")
+    sys.exit(1)
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ENV_FILE = os.path.join(BASE_DIR, ".env")
+GITIGNORE_FILE = os.path.join(BASE_DIR, ".gitignore")
+
+KEYS = ("MATRIX_MODE", "DATABASE_URL", "API_KEY", "LOG_LEVEL",
+        "ZION_ENDPOINT")
+REQUIRED = ("DATABASE_URL", "API_KEY", "ZION_ENDPOINT")
+SECRETS = ("DATABASE_URL", "API_KEY")
+MODES = ("development", "production")
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+DEFAULT_LOG_LEVEL = {"development": "DEBUG", "production": "WARNING"}
 
 
-def _find_dotenv() -> str | None:
-    """Look for .env file in current working directory."""
-    if os.path.exists(".env"):
-        return os.path.abspath(".env")
-    return None
+def load_config() -> tuple[dict[str, str | None], dict[str, str]]:
+    from_shell = {key for key in KEYS if os.environ.get(key)}
+    file_values: dict[str, str | None] = {}
+    if os.path.isfile(ENV_FILE):
+        try:
+            file_values = dict(dotenv_values(ENV_FILE))
+            load_dotenv(ENV_FILE, override=False)
+        except (OSError, UnicodeDecodeError) as error:
+            print(f"[WARN] Could not read .env file: {error}")
 
-
-def _load_config_with_dotenv() -> dict[str, str | None]:
-    """Load configuration using python-dotenv.
-
-    Returns a dict with config values; None means not found in .env
-    and not set as environment variable either.
-    """
-    config: dict[str, str | None] = {
-        "MATRIX_MODE": None,
-        "DATABASE_URL": None,
-        "API_KEY": None,
-        "LOG_LEVEL": None,
-        "ZION_ENDPOINT": None,
-    }
-
-    if HAS_DOTENV:
-        # Load .env without overriding existing environment variables
-        # (standard dotenv behavior: only sets if not already set)
-        load_dotenv()
-
-    # Read from environment variables (these take priority over .env)
-    config["MATRIX_MODE"] = os.environ.get("MATRIX_MODE")
-    config["DATABASE_URL"] = os.environ.get("DATABASE_URL")
-    config["API_KEY"] = os.environ.get("API_KEY")
-    config["LOG_LEVEL"] = os.environ.get("LOG_LEVEL", "DEBUG")
-    config["ZION_ENDPOINT"] = os.environ.get("ZION_ENDPOINT")
-
-    # If not set via env, try .env values (env vars still take priority)
-    if HAS_DOTENV:
-        dotenv_path = _find_dotenv()
-        if dotenv_path:
-            load_dotenv(dotenv_path=dotenv_path, override=False)
-
-    return config
-
-
-def _dev_mode_visibility(mode: str) -> dict[str, str]:
-    """Apply development-mode formatting/visibility rules."""
-    result = {}
-    if mode == "development":
-        result["db"] = "Connected to local instance (postgresql://localhost:5432/matrix)"
-        result["api"] = "Authenticated (key visible for dev purposes)"
-        result["log_level"] = os.environ.get("LOG_LEVEL", "DEBUG")
-        result["zion"] = "Online (https://zion.resistance.local/api — dev endpoint)"
-    else:
-        result["db"] = "Connected to local instance"
-        result["api"] = "Authenticated (key visible)"
-        result["log_level"] = "DEBUG"
-        result["zion"] = "Online (dev endpoint)"
-    return result
-
-
-def _prod_mode_visibility(mode: str) -> dict[str, str]:
-    """Apply production-mode formatting/visibility rules."""
-    result = {}
-    if mode == "production":
-        result["db"] = "Connected to production instance"
-        result["api"] = "Authenticated (API key: *** masked for security)"
-        result["log_level"] = "INFO (production default)"
-        result["zion"] = "Online (https://zion.resistance.prod/api)"
-    else:
-        result["db"] = "Connected to local instance"
-        result["api"] = "Authenticated (key visible)"
-        result["log_level"] = "DEBUG"
-        result["zion"] = "Online (dev endpoint)"
-    return result
-
-
-def _check_hardcoded_secrets() -> list[str]:
-    """Check oracle.py source for hardcoded secret assignments.
-
-    Only flags lines where a secret name is directly assigned a value
-    (e.g., API_KEY = some_string), not strings appearing in lists or docs.
-    Returns status messages.
-    """
-    messages: list[str] = []
-    try:
-        with open(__file__, "r", encoding="utf-8") as f:
-            source = f.read()
-        secret_names = {"API_KEY", "DATABASE_URL", "ZION_ENDPOINT"}
-        found_any = False
-        for line in source.splitlines():
-            stripped = line.strip()
-            # Skip comments
-            if stripped.startswith("#"):
-                continue
-            # Skip lines using authorized config-reading patterns
-            if any(stripped.startswith(prefix) for prefix in (
-                "os.environ", "os.getenv", "load_dotenv"
-            )):
-                continue
-            # Check for direct assignment patterns: SECRET_NAME = ...
-            # Match: SECRET_NAME followed by whitespace and =, or SECRET_NAME+=
-            for sname in secret_names:
-                if re.match(rf'^{re.escape(sname)}\s*=', stripped) or \
-                   re.match(rf'^{re.escape(sname)}=$', stripped):
-                    found_any = True
-                    break
-            if found_any:
-                break
-        if found_any:
-            messages.append(
-                "[WARN] Possible hardcoded secrets detected — use .env instead!"
-            )
+    config: dict[str, str | None] = {}
+    sources: dict[str, str] = {}
+    for key in KEYS:
+        config[key] = os.environ.get(key) or None
+        if key in from_shell:
+            sources[key] = "environment variable"
+        elif file_values.get(key):
+            sources[key] = ".env file"
         else:
-            messages.append(
-                "[OK] No hardcoded secrets detected"
-            )
-    except Exception:  # noqa: E722
-        messages.append(
-            "[WARN] Could not perform source code security check"
-        )
-    return messages
+            sources[key] = "missing"
+    return config, sources
 
 
-def _security_check(config: dict[str, str | None],
-                    dotenv_path: str | None) -> list[str]:
-    """Perform security checks and return list of status messages."""
-    messages: list[str] = []
-
-    # Hardcoded secret check
-    messages.extend(_check_hardcoded_secrets())
-
-    # Check .env file presence
-    if dotenv_path is not None:
-        messages.append(
-            "[OK] .env file properly configured"
-        )
+def resolve_mode(config: dict[str, str | None], sources: dict[str, str],
+                 warnings: list[str]) -> str:
+    raw = config["MATRIX_MODE"]
+    if raw is not None and raw.lower() in MODES:
+        return raw.lower()
+    if raw is None:
+        warnings.append("MATRIX_MODE not set, defaulting to development")
     else:
-        messages.append(
-            "[WARN] .env file not found — using environment variables only"
-        )
+        warnings.append(f"Unknown MATRIX_MODE '{raw}', "
+                        "defaulting to development")
+    sources["MATRIX_MODE"] = "default"
+    return "development"
 
-    # Production overrides availability
-    mat_mode = config.get("MATRIX_MODE", "")
-    if mat_mode and str(mat_mode).lower() == "production":
-        messages.append(
-            "[OK] Production overrides available"
-        )
+
+def resolve_log_level(config: dict[str, str | None], sources: dict[str, str],
+                      mode: str, warnings: list[str]) -> str:
+    raw = config["LOG_LEVEL"]
+    if raw is not None and raw.upper() in LOG_LEVELS:
+        level = raw.upper()
+        if mode == "production" and level == "DEBUG":
+            warnings.append("DEBUG logging is not recommended in production")
+        return level
+    default = DEFAULT_LOG_LEVEL[mode]
+    if raw is None:
+        warnings.append(f"LOG_LEVEL not set, defaulting to {default}")
     else:
-        messages.append(
-            "[OK] Development mode — full config visible for debugging"
-        )
+        warnings.append(f"Unknown LOG_LEVEL '{raw}', "
+                        f"defaulting to {default}")
+    sources["LOG_LEVEL"] = "default"
+    return default
 
-    return messages
+
+def mask_url(url: str) -> str:
+    if "://" not in url:
+        return url
+    scheme, rest = url.split("://", 1)
+    if "@" in rest:
+        rest = "***@" + rest.rsplit("@", 1)[1]
+    return f"{scheme}://{rest}"
 
 
-def _format_output(mode: str, mode_info: dict[str, str],
-                   security_msgs: list[str]) -> None:
-    """Print the expected output format."""
-    print("ORACLE STATUS: Reading the Matrix...")
-    print("Configuration loaded:")
-    print(f"  Mode: {mode}")
-    print(f"  Database: {mode_info.get('db', '')}")
-    print(f"  API Access: {mode_info.get('api', '')}")
-    print(f"  Log Level: {mode_info.get('log_level', 'DEBUG')}")
-    print(f"  Zion Network: {mode_info.get('zion', '')}")
-    print()
-    print("Environment security check:")
-    for msg in security_msgs:
-        print(f"  {msg}")
-    print()
-    print("The Oracle sees all configurations.")
+def describe_database(url: str | None, mode: str) -> str:
+    if not url:
+        return "Not configured"
+    local = any(host in url for host in ("localhost", "127.0.0.1", "sqlite"))
+    place = "local instance" if local else "remote instance"
+    if mode == "development":
+        return f"Connected to {place} ({mask_url(url)})"
+    return f"Connected to {place}"
+
+
+def describe_api(key: str | None, mode: str) -> str:
+    if not key:
+        return "Disabled (no API key)"
+    if mode == "development":
+        return f"Authenticated (key: {key[:4]}{'*' * 8})"
+    return "Authenticated"
+
+
+def describe_zion(url: str | None, mode: str) -> str:
+    if not url:
+        return "Offline (no endpoint)"
+    if not url.startswith("https://"):
+        return f"Online (insecure: {url})"
+    if mode == "development":
+        return f"Online ({url})"
+    return "Online"
+
+
+def check_hardcoded_secrets(config: dict[str, str | None]) -> str:
+    try:
+        with open(__file__, "r", encoding="utf-8") as file:
+            source = file.read()
+    except OSError:
+        return "[WARN] Could not scan source for hardcoded secrets"
+    for key in SECRETS:
+        value = config[key]
+        if value is not None and len(value) >= 8 and value in source:
+            return f"[WARN] {key} value is hardcoded in oracle.py"
+    return "[OK] No hardcoded secrets detected"
+
+
+def check_env_file() -> str:
+    if not os.path.isfile(ENV_FILE):
+        return "[WARN] No .env file found (cp .env.example .env)"
+    try:
+        with open(GITIGNORE_FILE, "r", encoding="utf-8") as file:
+            ignored = ".env" in [line.strip() for line in file]
+    except OSError:
+        ignored = False
+    if not ignored:
+        return "[WARN] .env file is not listed in .gitignore"
+    return "[OK] .env file properly configured"
+
+
+def check_overrides(sources: dict[str, str]) -> str:
+    overridden = [key for key in KEYS
+                  if sources[key] == "environment variable"]
+    if overridden:
+        return f"[OK] Production overrides active: {', '.join(overridden)}"
+    return "[OK] Production overrides available"
 
 
 def main() -> None:
-    """Entry point: load config, show dev/prod diff, security checks."""
-    # Attempt to load .env
-    dotenv_path = _find_dotenv()
-    config = _load_config_with_dotenv()
+    print("ORACLE STATUS: Reading the Matrix...")
+    print()
 
-    # Determine mode
-    raw_mode = config.get("MATRIX_MODE")
-    if raw_mode and str(raw_mode).lower() in ("development", "production"):
-        mode = str(raw_mode).lower()
+    config, sources = load_config()
+    warnings: list[str] = []
+    mode = resolve_mode(config, sources, warnings)
+    log_level = resolve_log_level(config, sources, mode, warnings)
+    missing = [key for key in REQUIRED if not config[key]]
+    for key in missing:
+        warnings.append(f"{key} is not set")
+
+    print("Configuration loaded:")
+    print(f"Mode: {mode}")
+    print(f"Database: {describe_database(config['DATABASE_URL'], mode)}")
+    print(f"API Access: {describe_api(config['API_KEY'], mode)}")
+    print(f"Log Level: {log_level}")
+    print(f"Zion Network: {describe_zion(config['ZION_ENDPOINT'], mode)}")
+    print()
+
+    if mode == "development":
+        print("Configuration sources (development only):")
+        for key in KEYS:
+            print(f"  {key}: {sources[key]}")
     else:
-        mode = "development"  # default fallback
+        print("Production mode: secrets hidden, debug details disabled")
+    print()
 
-    # Get mode-specific info
-    mode_info = _dev_mode_visibility(mode) if mode == "development" else _prod_mode_visibility(mode)
+    if warnings:
+        print("Configuration warnings:")
+        for warning in warnings:
+            print(f"[WARN] {warning}")
+        print()
 
-    # Security checks
-    security_msgs = _security_check(config, dotenv_path)
+    print("Environment security check:")
+    print(check_hardcoded_secrets(config))
+    print(check_env_file())
+    print(check_overrides(sources))
+    print()
 
-    # Format and print output
-    _format_output(mode, mode_info, security_msgs)
-
-    # Exit with error if production config is incomplete
-    if mode == "production":
-        required_prod = ["DATABASE_URL", "API_KEY", "ZION_ENDPOINT"]
-        missing_prod = [v for v in required_prod if not config.get(v)]
-        if missing_prod:
-            print()
-            print(
-                f"[ERROR] Production mode requires: "
-                f"{', '.join(missing_prod)}"
-            )
-            sys.exit(1)
-    sys.exit(0)
+    if mode == "production" and missing:
+        print(f"[ERROR] Production mode requires: {', '.join(missing)}")
+        print("The Oracle cannot see the full Matrix.")
+        sys.exit(1)
+    print("The Oracle sees all configurations.")
 
 
 if __name__ == "__main__":

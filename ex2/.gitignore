@@ -1,16 +1,7 @@
-# Exercise 2 gitignore
-# Environment variables - never commit real secrets!
 .env
-
-# Python bytecode cache
 __pycache__/
 *.pyc
-*.pyo
-
-# Virtual environments
 .venv/
 venv/
-env/
-
-# Output artifacts
-matrix_analysis.png
+matrix_env/
+.mypy_cache/
